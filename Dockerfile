@@ -10,10 +10,7 @@ RUN yum -y install epel-release && \
     libxcb libxcb-devel xcb-util xcb-util-devel centos-release-scl-rh \
     devtoolset-3-gcc devtoolset-3-gcc-c++
 
-RUN addgroup --gid 1000 builder && \
-    adduser --uid 1000 --gid 1000 --disabled-login --disabled-password \
-    --gecos "" builder && \
-    install -d -o 1000 -g 1000 /workspace /out
+RUN groupadd --gid 1000 builder && useradd --uid 1000 --gid 1000 --comment "" builder
 
 ADD build-appimage.sh /build-appimage.sh
 
