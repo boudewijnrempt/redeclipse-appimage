@@ -1,5 +1,3 @@
-#! /bin/bash
-
 set -e
 
 log() {
@@ -11,67 +9,43 @@ log() {
 
 OLD_CWD="$(pwd)"
 
-export DEBIAN_FRONTEND=noninteractive
 export TERM=xterm-256color
-export LC_ALL=C
-export LANGUAGE=C
+export LC_ALL=en_US.UTF-8
+export LANGUAGE=en_US.UTF-8
 export SUDO_UID=${SUDO_UID:-1000}
 export SUDO_GID=${SUDO_GID:-1000}
 
-export APP=redeclipse
+export APP=krita
 export BRANCH=${BRANCH:-stable}
 export ARCH=${ARCH:-x86_64}
-export REPO_URL=${REPO_URL:-https://github.com/red-eclipse/base.git}
+export REPO_URL=${REPO_URL:-git://anongit.kde.org/krita}
 # parsed automatically unless they are already set
 export VERSION
 export COMMIT
 
 export WORKSPACE=$(readlink -f workspace)
-export PREFIX=$WORKSPACE/$APP.AppDir
+export APPDIR=$WORKSPACE/$APP.AppDir
 export DOWNLOADS=$WORKSPACE/downloads
 export BUILD=$WORKSPACE/build
-export RE_DIR=$PREFIX/usr/lib/$APP
+export DEPS_BUILD=$WORKSPACE/depsbuild
+export CHECKOUT=$WORKSPACE/checkout
 
 notset="(parsed later from source code)"
 log "VERSION: ${VERSION:-$notset} -- BRANCH: $BRANCH"
 
 
 log "preparing environment"
-mkdir -p $WORKSPACE $PREFIX $DOWNLOADS $BUILD
+mkdir -p $WORKSPACE $APPDIR $DOWNLOADS $BUILD
 
-cd $WORKSPACE
-wget -Nc https://github.com/probonopd/AppImages/raw/master/functions.sh
-. functions.sh
-
-
-log "downloading and extracting deb files"
-
-cd $DOWNLOADS
-apt-get download libasound2 libsdl2-2.0-0 libsdl2-image-2.0-0 \
-    libsdl2-mixer-2.0-0 zlib1g libjpeg62 libpng12-0  libflac8 libogg0 \
-    libvorbis0a libpciaccess0 libdrm2 libxcb-dri2-0 libxcb-dri3-0 \
-    libxcb-present0 libxcb1 libxau6 libxext6  libx11-6 libx11-xcb1 \
-    libxfixes3 libxcb-xfixes0 libxdamage1 libexpat1 libegl1-mesa \
-    libgl1-mesa-dri libgl1-mesa-glx libglapi-mesa libgles2-mesa libglu1-mesa \
-    libtinfo5
-
-for package in *.deb; do
-    dpkg-deb -x $package .
-done
+# Newer compiler than what comes with CentOS 6
+. /opt/rh/devtoolset-3/enable
 
 
-cd $BUILD
-if [ ! -d .git ]; then
-    log "cloning Red Eclipse repository"
-    git clone https://github.com/red-eclipse/base.git -n .
-else
-    log "updating Red Eclipse repository"
-    git reset --hard HEAD
-    git fetch
-fi
+cd $CHECKOUT
+log "cloning Krita repository"
+git clone   --depth 1 "$REPO_URL" -n .
 
 git checkout ${COMMIT:-$BRANCH}
-git submodule update --init
 
 if [ "$VERSION" == "" ]; then
     VERSION="$(cat src/engine/version.h | grep VERSION_MAJOR | head -n1 | awk '{print $3}')"
@@ -90,64 +64,64 @@ COMMIT=$(git rev-parse --short $COMMIT)
 export COMMIT
 
 
-log "building Red Eclipse binaries"
-pushd src
+log "building dependencies from 3rdparty"
+cd $DEPS_BUILD
+cmake3 $CHECKOUT/3rdparty \
+    -DCMAKE_INSTALL_PREFIX:PATH=/usr \
+    -DINSTALL_ROOT=/usr \
+    -DEXTERNALS_DOWNLOAD_DIR=$DOWNLOADS
 
-[ ! -d build ] && mkdir build
-
-pushd build
-cmake .. -G Ninja
-ninja -v install
-popd
-
-popd
-
-
-log "copying Red Eclipse resources"
-mkdir -p $RE_DIR
-for dir in bin config data; do
-    mkdir -p $RE_DIR/$dir
-    rsync -av --delete --exclude .github --exclude .git --delete $BUILD/$dir $RE_DIR
+# ext_qt 
+for target in ext_boost ext_eigen3 ext_exiv2 ext_fftw3 ext_lcms2 ext_lcms2 \
+              ext_ocio ext_openexr ext_vc ext_png ext_tiff ext_jpeg ext_libraw ext_kcrash ext_poppler ext_gsl
+do
+    cmake3 --build . --config RelWithDebInfo --target $target
 done
 
 
+log "building Krita"
+cd $BUILD
+cmake3 $CHECKOUT \
+    -DCMAKE_INSTALL_PREFIX:PATH=/usr \
+    -DDEFINE_NO_DEPRECATED=1 \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DPACKAGERS_BUILD=1 \
+    -DBUILD_TESTING=FALSE \
+    -DKDE4_BUILD_TESTS=FALSE \
+    -DPYQT_SIP_DIR_OVERRIDE=/usr/share/sip/\
+    -DHAVE_MEMORY_LEAK_TRACKER=FALSE
+    
+make DESTDIR=$APPDIR -j4 install
+
 log "modifying global variables for AppImage tools"
-export PATH=$PREFIX/bin:$PATH
-export LD_LIBRARY_PATH=$PREFIX/lib:$LD_LIBRARY_PATH
-export XDG_DATA_DIRS=$PREFIX/share:$XDG_DATA_DIRS
-export PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH
+export PATH=$APPDIR/usr/bin:$PATH
+export LD_LIBRARY_PATH=$APPDIR/usr/lib:$LD_LIBRARY_PATH
+export XDG_DATA_DIRS=$APPDIR/usr/share:$XDG_DATA_DIRS
+export PKG_CONFIG_PATH=$APPDIR/usr/lib/pkgconfig:$PKG_CONFIG_PATH
 
 
-cd $PREFIX
-log "downloading AppRun"
-get_apprun
+cd $APPDIR
 
-log "copying dependencies and libraries"
-copy_deps; copy_deps; copy_deps
-rsync -av $DOWNLOADS/{lib,usr} $PREFIX
-move_lib
-mkdir -p $PREFIX/usr/bin/
-rsync -av /bin/bash $PREFIX/usr/bin/
-
-
-# move PulseAudio libraries as requested in #3
-mv $PREFIX/usr/lib/x86_64-linux-gnu/pulseaudio/*.so $PREFIX/usr/lib/x86_64-linux-gnu/
+# Stuff that cannot be found by copy_deps
+# copy the Python 3 installation
+#cp -r /usr/lib/python3.5 usr/lib/
+# copy sip
+#cp -r /usr/sip usr/
 
 
 log "deleting blacklisted libraries"
-(cd $PREFIX/usr/lib/ && delete_blacklisted)
-rm -v $PREFIX/usr/lib/x86_64-linux-gnu/lib{xcb,GL,drm,X}*.so.* || true
-
-
-log "copying desktop file, icon and launcher"
-cp $OLD_CWD/$APP{.desktop,.png} $PREFIX/
-cp $OLD_CWD/$APP $PREFIX/usr/bin/
-sed -i 's/_BRANCH_/'"$BRANCH"'/g' $PREFIX/usr/bin/$APP
-
-
-log "getting desktop integration"
-get_desktopintegration $APP
-
+for file in libcom_err.so.2 libcrypt.so.1 libdl.so.2 libexpat.so.1 libgcc_s.so.1 \
+            libglib-2.0.so.0 libgpg-error.so.0 libgssapi_krb5.so.2 libgssapi.so.3 \
+            libhcrypto.so.4 libheimbase.so.1 libheimntlm.so.0 libhx509.so.5 libICE.so.6 \
+            libidn.so.11 libk5crypto.so.3 libkeyutils.so.1 libkrb5.so.26 libkrb5.so.3 \
+            libkrb5support.so.0 libm.so.6 libp11-kit.so.0 libpcre.so.3 libpthread.so.0 \
+            libresolv.so.2 libroken.so.18 librt.so.1 libsasl2.so.2 libSM.so.6 \
+            libusb-1.0.so.0 libuuid.so.1 libwind.so.0 \
+            'libfontconfig.so.*' 'libGL.so.*' 'libdrm.so.*' 'libX11.so.*' 'libstdc*' \
+            libxcb.so.1  cmake3 pkgconfig ECM gettext pkgconfig
+do
+    find usr/ -type f -iname "$file" -delete
+done
 
 cd $WORKSPACE
 log "generating appimage"
@@ -155,17 +129,24 @@ log "generating appimage"
 [ ! -e $OLD_CWD/out ] && mkdir -p $OLD_CWD/out
 
 # non-FUSE, simple replacement for generate_type2_appimage
-wget -c https://github.com/probonopd/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-chmod +x appimagetool-x86_64.AppImage
-./appimagetool-x86_64.AppImage --appimage-extract
+wget -c "https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage" 
+chmod a+x linuxdeployqt-continuous-x86_64.AppImage
+./linuxdeployqt-continuous-x86_64.AppImage --appimage-extract
 
 GLIBC_NEEDED=$(glibc_needed)
 APPIMAGE_FILENAME=${APP}-${VERSION}-${BRANCH}-${COMMIT}-${ARCH}.glibc$GLIBC_NEEDED.AppImage
 APPIMAGE_PATH=$OLD_CWD/out/$APPIMAGE_FILENAME
 
-URL="zsync|https://download.assassinate-you.net/red-eclipse/appimage/latest/redeclipse-${BRANCH}-x86_64.AppImage.zsync"
+URL="zsync|https://download.kde.org/krita/unstable/appimage/krita-${BRANCH}-x86_64.AppImage.zsync"
 
-squashfs-root/AppRun -n -v -u "$URL" $PREFIX $APPIMAGE_PATH
+# FIXME: Might need to run twice; see https://github.com/probonopd/linuxdeployqt/issues/25
+for i in $(seq 1 2) 
+do
+    squashfs-root/AppRun $APPDIR/usr/share/applications/org.kde.krita.desktop -bundle-non-qt-libs -verbose=2
+done
+
+# TODO: -s for signing, needs a GPG2 key installed
+squashfs-root/AppRun/usr/bin/appimagetool $APPDIR -u "$URL"
 
 rm -r squashfs-root
 

@@ -12,7 +12,9 @@ RUN yum -y update && \
     gcc-c++ freetype-devel fontconfig-devel libxml2-devel libstdc++-devel \
     libXrender-devel patch xcb-util-keysyms-devel libXi-devel \
     mesa-libGL-devel libxcb libxcb-devel xcb-util xcb-util-devel \
-    devtoolset-3-gcc devtoolset-3-gcc-c++ devtoolset-3-binutils
+    devtoolset-3-gcc devtoolset-3-gcc-c++ devtoolset-3-binutils \
+    qt5-qtbase-devel qt5-qtimageformats qt5-qtmultimedia-devel qt5-qtsvg-devel \
+    qt5-qttools-devel qt5-qtx11extras-devel
 
 RUN groupadd --gid 1000 builder && useradd --uid 1000 --gid 1000 --comment "" builder
 
